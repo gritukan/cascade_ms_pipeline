@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cascade-ms-pipeline"
+version = "0.1.0"
+description = "Report-centric cascaded proteomics search pipeline with group-aware FDR analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "matplotlib>=3.7",
+  "lxml>=4.9",
+]
+
+[project.scripts]
+cascade-ms-pipeline = "cascade_ms_pipeline.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["cascade_ms_pipeline*"]

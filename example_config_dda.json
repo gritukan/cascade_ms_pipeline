@@ -1,0 +1,143 @@
+{
+  "general": {
+    "report_dir": "report_dda",
+    "spectra": [
+      "data/run01.mzML",
+      "data/run02.mzML"
+    ],
+    "acquisition": "dda",
+    "protease": "trypsin",
+    "fragmentation": "hcd",
+    "keep_intermediate_spectra": false,
+    "plot_format": "png",
+    "dry_run": false,
+    "random_seed": 1,
+    "binaries": {
+      "sage": "sage",
+      "diann": "diann",
+      "ms2rescore": "ms2rescore",
+      "python": "python"
+    }
+  },
+  "fasta_groups": [
+    {
+      "name": "canonical",
+      "path": "db/canonical.fasta",
+      "supplies_decoys": false,
+      "decoy_prefix": "rev_",
+      "is_entrapment": false,
+      "description": "Canonical proteome"
+    },
+    {
+      "name": "noncanonical",
+      "path": "db/noncanonical.fasta",
+      "supplies_decoys": false,
+      "decoy_prefix": "rev_",
+      "is_entrapment": false,
+      "description": "Novel ORFs / alternative proteins"
+    },
+    {
+      "name": "entrapment",
+      "path": "db/entrapment.fasta",
+      "supplies_decoys": false,
+      "decoy_prefix": "rev_",
+      "is_entrapment": true,
+      "description": "Entrapment proteome"
+    }
+  ],
+  "searches": [
+    {
+      "name": "01_canonical_first",
+      "engine": {
+        "type": "sage",
+        "params": {
+          "config_overrides": {
+            "database": {
+              "enzyme": {
+                "missed_cleavages": 2,
+                "semi_enzymatic": false
+              }
+            },
+            "report_psms": 200
+          },
+          "extra_args": []
+        }
+      },
+      "fasta_groups": ["canonical", "entrapment"],
+      "rescore": [
+        {
+          "type": "ms2rescore",
+          "params": {}
+        }
+      ],
+      "fdr": {
+        "methods": ["all_together", "per_group", "transferred_subgroup", "group_walk"],
+        "correction": 1.0,
+        "alpha_grid": [0.001, 0.005, 0.01, 0.02, 0.05, 0.1],
+        "score_source": "final",
+        "groupwalk_k": 40,
+        "groupwalk_seed": 1,
+        "transferred_min_decoys": 20,
+        "transferred_min_points": 8,
+        "transferred_clip_min": 1e-06,
+        "entrapment_strategy": "unambiguous"
+      },
+      "trim": {
+        "enabled": true,
+        "method": "per_group",
+        "level": "psm",
+        "alpha": 0.01,
+        "unsupported_action": "skip"
+      }
+    },
+    {
+      "name": "02_noncanonical_residual",
+      "engine": {
+        "type": "sage",
+        "params": {
+          "config_overrides": {
+            "database": {
+              "enzyme": {
+                "missed_cleavages": 2,
+                "semi_enzymatic": false
+              }
+            },
+            "report_psms": 200
+          },
+          "extra_args": []
+        }
+      },
+      "fasta_groups": ["noncanonical", "entrapment"],
+      "rescore": [
+        {
+          "type": "oktoberfest",
+          "params": {
+            "fdr_estimation_method": "percolator",
+            "instrument_type": "QE",
+            "spectra_type": "mzml",
+            "numThreads": 16
+          }
+        }
+      ],
+      "fdr": {
+        "methods": ["all_together", "per_group", "transferred_subgroup", "group_walk"],
+        "correction": 1.0,
+        "alpha_grid": [0.001, 0.005, 0.01, 0.02, 0.05, 0.1],
+        "score_source": "final",
+        "groupwalk_k": 40,
+        "groupwalk_seed": 1,
+        "transferred_min_decoys": 20,
+        "transferred_min_points": 8,
+        "transferred_clip_min": 1e-06,
+        "entrapment_strategy": "unambiguous"
+      },
+      "trim": {
+        "enabled": false,
+        "method": "per_group",
+        "level": "psm",
+        "alpha": 0.01,
+        "unsupported_action": "skip"
+      }
+    }
+  ]
+}
