@@ -136,10 +136,12 @@ def load_oktoberfest_psms(psms_path: Path, *, label: int) -> pd.DataFrame:
     score_col = _find_col(df, ["score", "mokapot score", "mokapot_score", "percolator score", "svm_score"], required=False)
     pep_col = _find_col(df, ["Peptide", "peptide", "sequence", "Sequence", "stripped_peptide", "modified_sequence"], required=False)
     prot_col = _find_col(df, ["Protein", "protein", "Proteins", "proteins", "proteinIds", "protein_id", "ProteinIds"], required=False)
+    psm_id_col = _find_col(df, ["PSMId", "psm_id", "psmId"], required=True)
     df["_q"] = safe_float_series(df[q_col]) if q_col is not None else np.nan
     df["_score"] = safe_float_series(df[score_col]) if score_col is not None else np.nan
     df["_peptide"] = df[pep_col].astype(str) if pep_col is not None else ""
     df["_proteins"] = df[prot_col].astype(str) if prot_col is not None else ""
+    df["scan"] = df[psm_id_col].str.split("-").str[-3].astype("int64")
     df["label"] = int(label)
     return df
 
@@ -184,7 +186,7 @@ def maybe_attach_proteins_from_tab(
         return df
     tab = _read_table_guess(tab_path)
     join_key = None
-    for k in ["SpecId", "PSMId", "ScanNr", "scan", "scan_number", "SCAN_NUMBER"]:
+    for k in ["scan", "SpecId", "PSMId", "ScanNr", "scan_number", "SCAN_NUMBER"]:
         if k in df.columns and k in tab.columns:
             join_key = k
             break
@@ -214,7 +216,7 @@ class OktoberfestRescorer(Rescorer):
         fdr_method = str(cfg.params.get("fdr_estimation_method", "percolator"))
         kind = str(cfg.params.get("kind", "rescore"))
         search_results_type = str(cfg.params.get("search_results_type", "Sage"))
-        search_results = base_artifacts.raw_paths.get("results", base_artifacts.normalized_path)
+        search_results = base_artifacts.raw_paths.get("results", base_artifacts.normalized_path).resolve()
         okcfg = OktoberfestRescoreConfig(
             work_dir=out_dir,
             search_results=search_results,

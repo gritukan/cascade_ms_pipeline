@@ -206,9 +206,9 @@ def trim_dda_spectra(
         native_ids = set(sub["spectrum_id"].dropna().astype(str).tolist()) if "spectrum_id" in sub.columns else set()
         out_name = basename[:-3] if basename.lower().endswith(".gz") else basename
         if not out_name.lower().endswith(".mzml"):
-            out_name = spec.stem + ".trimmed.mzML"
+            out_name = spec.stem + "_trimmed.mzML"
         else:
-            out_name = out_name[:-5] + ".trimmed.mzML"
+            out_name = out_name[:-5] + "_trimmed.mzML"
         out_path = out_dir / out_name
         stats = trim_mzml_remove_ms2(spec, out_path, scans_to_remove=scans, native_ids_to_remove=native_ids)
         trimmed_paths.append(out_path)
