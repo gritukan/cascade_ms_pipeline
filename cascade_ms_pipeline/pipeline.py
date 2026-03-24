@@ -39,6 +39,7 @@ from .results import aggregate_to_peptide_level, annotate_groups_on_results, sel
 from .util import dataframe_to_tsv
 from .rescorers import RESCORER_REGISTRY
 from .trimming import trim_dda_spectra
+from .dia_trimming import DiannDiaTrimConfig, trim_dia_runs_from_report
 from .util import ensure_dir, json_ready, write_json, write_text
 
 
@@ -201,7 +202,13 @@ class PipelineRunner:
 
         next_spectra = spectra
         if step.trim.enabled:
-            next_spectra = self._run_trimming(step=step, step_dir=step_dir, row_df=current_df, input_spectra=spectra)
+            next_spectra = self._run_trimming(
+                step=step,
+                step_dir=step_dir,
+                row_df=current_df,
+                input_spectra=spectra,
+                engine_raw_paths=artifacts.raw_paths,
+            )
 
         write_text("\n".join(notes) + "\n", step_dir / "notes.txt")
         return {
@@ -362,16 +369,9 @@ class PipelineRunner:
         step_dir: Path,
         row_df: pd.DataFrame,
         input_spectra: List[Path],
+        engine_raw_paths: Dict[str, Path],
     ) -> List[Path]:
         trim_dir = ensure_dir(step_dir / "trim")
-        if self.cfg.general.acquisition != "dda":
-            message = (
-                "DIA trimming is not implemented in this pipeline yet; the requested trim step was skipped and the next step will reuse the same spectra.\n"
-            )
-            write_text(message, trim_dir / "NOT_IMPLEMENTED.txt")
-            if step.trim.unsupported_action == "error":
-                raise NotImplementedError(message)
-            return input_spectra
 
         method_q_path = step_dir / "fdr" / "psm" / step.trim.method / "q_values.tsv"
         if not method_q_path.exists():
@@ -380,12 +380,84 @@ class PipelineRunner:
             )
         accepted_df = pd.read_csv(method_q_path, sep="\t", low_memory=False)
         accepted_df = accepted_df[(accepted_df["label"] == 1) & (accepted_df["q_value"] <= float(step.trim.alpha))].copy()
-        keep_cols = [c for c in ["row_id", "source_file", "scan", "spectrum_id", "peptide", "group_name", "q_value"] if c in accepted_df.columns]
-        dataframe_to_tsv(accepted_df[keep_cols], trim_dir / "accepted_psms_for_trimming.tsv")
-        trimmed_dir = trim_dir / "trimmed_spectra"
-        trimmed_paths, summary_df = trim_dda_spectra(input_spectra, accepted_df, out_dir=trimmed_dir)
-        self.trim_dirs_to_cleanup.append(trimmed_dir)
-        return trimmed_paths
+
+        if self.cfg.general.acquisition == "dda":
+            keep_cols = [c for c in ["row_id", "source_file", "scan", "spectrum_id", "peptide", "group_name", "q_value"] if c in accepted_df.columns]
+            dataframe_to_tsv(accepted_df[keep_cols], trim_dir / "accepted_psms_for_trimming.tsv")
+            trimmed_dir = trim_dir / "trimmed_spectra"
+            trimmed_paths, _summary_df = trim_dda_spectra(input_spectra, accepted_df, out_dir=trimmed_dir)
+            self.trim_dirs_to_cleanup.append(trimmed_dir)
+            return trimmed_paths
+
+        if self.cfg.general.acquisition == "dia":
+            precursor_col = "Precursor.Id" if "Precursor.Id" in accepted_df.columns else ("spectrum_id" if "spectrum_id" in accepted_df.columns else None)
+            if precursor_col is None:
+                message = (
+                    "DIA trimming requires a precursor identifier column; neither 'Precursor.Id' nor 'spectrum_id' was found in the FDR q-values table.\n"
+                )
+                write_text(message, trim_dir / "TRIM_FAILED.txt")
+                if step.trim.unsupported_action == "error":
+                    raise KeyError(message)
+                return input_spectra
+
+            keep_cols = [c for c in ["row_id", "source_file", precursor_col, "spectrum_id", "peptide", "group_name", "q_value"] if c in accepted_df.columns]
+            dataframe_to_tsv(accepted_df[keep_cols], trim_dir / "accepted_precursors_for_trimming.tsv")
+
+            report_path = None
+            for key in ["report_native", "report"]:
+                cand = engine_raw_paths.get(key)
+                if cand is not None and Path(str(cand)).exists():
+                    report_path = Path(str(cand))
+                    break
+            if report_path is None:
+                for cand in [step_dir / "engine" / "diann_report.parquet", step_dir / "engine" / "diann_report.tsv"]:
+                    if cand.exists():
+                        report_path = cand
+                        break
+            if report_path is None:
+                message = "DIA trimming could not locate the DIA-NN main report path.\n"
+                write_text(message, trim_dir / "TRIM_FAILED.txt")
+                if step.trim.unsupported_action == "error":
+                    raise FileNotFoundError(message)
+                return input_spectra
+
+            trim_params = dict(step.trim.params)
+            cfg = DiannDiaTrimConfig(
+                q_threshold=float(step.trim.alpha),
+                q_col="q_value",
+                run_col="source_file",
+                precursor_col=precursor_col,
+                xic_dir=Path(str(trim_params["xic_dir"])) if trim_params.get("xic_dir") else None,
+                mz_tolerance_ppm=float(trim_params.get("mz_tolerance_ppm", 20.0)),
+                rt_max_diff_sec=(float(trim_params["rt_max_diff_sec"]) if trim_params.get("rt_max_diff_sec") is not None else None),
+                ms1_isotopes=int(trim_params.get("ms1_isotopes", 3)),
+                ms1_value_mode=str(trim_params.get("ms1_value_mode", "envelope_total")),
+                remove_zero_peaks=bool(trim_params.get("remove_zero_peaks", True)),
+                zero_floor=float(trim_params.get("zero_floor", 0.0)),
+            )
+            trimmed_dir = trim_dir / "trimmed_spectra"
+            try:
+                trimmed_paths, _summary_df = trim_dia_runs_from_report(
+                    report_path=report_path,
+                    spectra=input_spectra,
+                    out_dir=trimmed_dir,
+                    report_df=accepted_df,
+                    cfg=cfg,
+                )
+            except Exception as exc:
+                message = f"DIA trimming failed: {exc}\n"
+                write_text(message, trim_dir / "TRIM_FAILED.txt")
+                if step.trim.unsupported_action == "error":
+                    raise
+                return input_spectra
+            self.trim_dirs_to_cleanup.append(trimmed_dir)
+            return trimmed_paths
+
+        message = f"Unsupported acquisition type for trimming: {self.cfg.general.acquisition!r}\n"
+        write_text(message, trim_dir / "TRIM_FAILED.txt")
+        if step.trim.unsupported_action == "error":
+            raise NotImplementedError(message)
+        return input_spectra
 
 
 

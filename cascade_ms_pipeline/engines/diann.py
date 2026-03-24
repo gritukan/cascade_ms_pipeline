@@ -216,6 +216,8 @@ def build_diann_cmd(cfg: DiannRunConfig) -> Tuple[List[str], Optional[Path]]:
     if cfg.report_decoys:
         cmd.append("--report-decoys")
 
+    cmd.extend(["--qvalue", "1.0"])  # Ensure all results are reported, even if we filter them out later
+
     cmd.extend(_clean_extra_args(cfg.extra_args))
     return cmd, used_cfg
 
@@ -226,7 +228,12 @@ class DiannEngine(SearchEngine):
     @staticmethod
     def _load_report(path: Path) -> pd.DataFrame:
         if path.suffix == ".parquet":
-            return pd.read_parquet(path)
+            try:
+                return pd.read_parquet(path)
+            except Exception as exc:
+                raise ImportError(
+                    f"Failed to read DIA-NN parquet report {path}. Install a parquet backend such as pyarrow or fastparquet."
+                ) from exc
         return pd.read_csv(path, sep="\t", low_memory=False)
 
     @staticmethod

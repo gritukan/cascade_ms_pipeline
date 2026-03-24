@@ -142,6 +142,7 @@ class TrimmingConfig:
     level: str = "psm"
     alpha: float = 0.01
     unsupported_action: str = "skip"  # skip | error
+    params: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: Optional[Mapping[str, Any]]) -> "TrimmingConfig":
@@ -153,6 +154,7 @@ class TrimmingConfig:
             level=str(raw.get("level", "psm")).lower(),
             alpha=float(raw.get("alpha", 0.01)),
             unsupported_action=str(raw.get("unsupported_action", "skip")).lower(),
+            params=dict(raw.get("params", {})),
         )
 
 
