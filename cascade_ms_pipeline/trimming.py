@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 import pandas as pd
 from lxml import etree
 
+from .indexed_mzml import CountingWriter, build_index_footer_prefix, indexed_root_tag, sha1_of_path
 from .util import dataframe_to_tsv, local_name, parse_scan_number
 
 
@@ -99,13 +100,18 @@ def trim_mzml_remove_ms2(
     total, total_ms2, removed_ms2, kept = _count_kept_spectra(input_path, scans_to_remove, native_ids_to_remove)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with _open_xml_stream(input_path) as fh_in, output_path.open("wb") as fh_out:
-        fh_out.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
-        root_cm = None
+    with _open_xml_stream(input_path) as fh_in, output_path.open("wb") as raw_out:
+        writer = CountingWriter(raw_out)
+        writer.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+        indexed_root_cm = None
+        mzml_cm = None
         run_cm = None
         spectrum_list_cm = None
+        mzml_nsmap = None
+        mzml_tag = None
+        spectrum_offsets = []
 
-        with etree.xmlfile(fh_out, encoding="utf-8") as xf:
+        with etree.xmlfile(writer, encoding="utf-8") as xf:
             context = etree.iterparse(fh_in, events=("start", "end"), huge_tree=True)
             for event, elem in context:
                 lname = local_name(elem.tag)
@@ -113,9 +119,18 @@ def trim_mzml_remove_ms2(
                 parent_lname = local_name(parent.tag) if parent is not None else None
 
                 if event == "start":
-                    if lname == "mzML" and root_cm is None:
-                        root_cm = xf.element(elem.tag, elem.attrib, nsmap=elem.nsmap)
-                        root_cm.__enter__()
+                    if lname == "indexedmzML" and indexed_root_cm is None:
+                        indexed_root_cm = xf.element(elem.tag, elem.attrib, nsmap=elem.nsmap)
+                        indexed_root_cm.__enter__()
+                    elif lname == "mzML":
+                        if indexed_root_cm is None:
+                            indexed_root_cm = xf.element(indexed_root_tag(elem.tag), {}, nsmap=elem.nsmap)
+                            indexed_root_cm.__enter__()
+                        if mzml_cm is None:
+                            mzml_tag = elem.tag
+                            mzml_nsmap = elem.nsmap
+                            mzml_cm = xf.element(elem.tag, elem.attrib)
+                            mzml_cm.__enter__()
                     elif lname == "run" and parent_lname == "mzML" and run_cm is None:
                         run_cm = xf.element(elem.tag, elem.attrib)
                         run_cm.__enter__()
@@ -129,6 +144,8 @@ def trim_mzml_remove_ms2(
                 # end events below
                 if lname == "spectrum" and parent_lname == "spectrumList":
                     if not _should_remove_spectrum(elem, scans_to_remove, native_ids_to_remove):
+                        xf.flush()
+                        spectrum_offsets.append((elem.get("id", ""), writer.tell()))
                         xf.write(elem)
                     _prune_element(elem)
                     continue
@@ -158,9 +175,9 @@ def trim_mzml_remove_ms2(
                     continue
 
                 if lname == "mzML":
-                    if root_cm is not None:
-                        root_cm.__exit__(None, None, None)
-                        root_cm = None
+                    if mzml_cm is not None:
+                        mzml_cm.__exit__(None, None, None)
+                        mzml_cm = None
                     _prune_element(elem)
                     continue
 
@@ -174,6 +191,19 @@ def trim_mzml_remove_ms2(
                     continue
                 if parent is not None:
                     _prune_element(elem)
+
+            xf.flush()
+            writer.flush()
+            index_list_offset = writer.tell()
+            footer_prefix = build_index_footer_prefix(index_list_offset, spectrum_offsets)
+            writer.write(footer_prefix)
+            writer.flush()
+            checksum = sha1_of_path(output_path)
+            writer.write(checksum.encode("utf-8"))
+            writer.write(b"</fileChecksum>")
+            if indexed_root_cm is not None:
+                indexed_root_cm.__exit__(None, None, None)
+                indexed_root_cm = None
 
     return TrimStats(
         input_file=input_path,

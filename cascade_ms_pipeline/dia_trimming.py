@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 from lxml import etree
 
+from .indexed_mzml import CountingWriter, build_index_footer_prefix, indexed_root_tag, sha1_of_path
+
 PROTON = 1.007276466812
 H2O = 18.0105646837
 C13_C12 = 1.0033548378
@@ -627,20 +629,31 @@ def trim_mzml_with_subtractions(
     total_spectra = 0
     modified_spectra = 0
     total_subtractions = sum(len(v) for v in assignments_by_ordinal.values())
-    with _open_maybe_gzip(input_mzml, 'rb') as fh_in, output_mzml.open('wb') as fh_out:
-        fh_out.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
-        with etree.xmlfile(fh_out, encoding='utf-8') as xf:
+    with _open_maybe_gzip(input_mzml, 'rb') as fh_in, output_mzml.open('wb') as raw_out:
+        writer = CountingWriter(raw_out)
+        writer.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+        with etree.xmlfile(writer, encoding='utf-8') as xf:
             ctx = etree.iterparse(fh_in, events=('start', 'end'), huge_tree=True)
-            root_ctx = run_ctx = spectrum_list_ctx = None
+            indexed_root_ctx = mzml_ctx = run_ctx = spectrum_list_ctx = None
+            mzml_tag = None
+            spectrum_offsets = []
             ordinal = 0
             for event, elem in ctx:
                 lname = _local_name(elem.tag)
                 parent = elem.getparent()
                 parent_name = _local_name(parent.tag) if parent is not None else None
                 if event == 'start':
-                    if lname == 'mzML' and root_ctx is None:
-                        root_ctx = xf.element(elem.tag, elem.attrib, nsmap=elem.nsmap)
-                        root_ctx.__enter__()
+                    if lname == 'indexedmzML' and indexed_root_ctx is None:
+                        indexed_root_ctx = xf.element(elem.tag, elem.attrib, nsmap=elem.nsmap)
+                        indexed_root_ctx.__enter__()
+                    elif lname == 'mzML':
+                        if indexed_root_ctx is None:
+                            indexed_root_ctx = xf.element(indexed_root_tag(elem.tag), {}, nsmap=elem.nsmap)
+                            indexed_root_ctx.__enter__()
+                        if mzml_ctx is None:
+                            mzml_tag = elem.tag
+                            mzml_ctx = xf.element(elem.tag, elem.attrib)
+                            mzml_ctx.__enter__()
                     elif lname == 'run' and parent_name == 'mzML' and run_ctx is None:
                         run_ctx = xf.element(elem.tag, elem.attrib)
                         run_ctx.__enter__()
@@ -679,6 +692,8 @@ def trim_mzml_with_subtractions(
                                 _encode_binary_array(inten_meta[0], np.asarray(new_int), dtype=inten_meta[1], compressed=inten_meta[2])
                                 elem.set('defaultArrayLength', str(len(new_mz)))
                                 modified_spectra += 1
+                    xf.flush()
+                    spectrum_offsets.append((elem.get('id', ''), writer.tell()))
                     xf.write(elem)
                     ordinal += 1
                     _prune(elem)
@@ -704,15 +719,31 @@ def trim_mzml_with_subtractions(
                     _prune(elem)
                     continue
                 if lname == 'mzML':
-                    if root_ctx is not None:
-                        root_ctx.__exit__(None, None, None)
-                        root_ctx = None
+                    if mzml_ctx is not None:
+                        mzml_ctx.__exit__(None, None, None)
+                        mzml_ctx = None
+                    _prune(elem)
+                    continue
+                if lname in {'indexedmzML', 'indexList', 'indexListOffset', 'fileChecksum'}:
                     _prune(elem)
                     continue
                 if parent_name not in {'mzML', 'run', 'spectrumList'}:
                     continue
                 if parent is not None:
                     _prune(elem)
+
+            xf.flush()
+            writer.flush()
+            index_list_offset = writer.tell()
+            footer_prefix = build_index_footer_prefix(index_list_offset, spectrum_offsets)
+            writer.write(footer_prefix)
+            writer.flush()
+            checksum = sha1_of_path(output_mzml)
+            writer.write(checksum.encode('utf-8'))
+            writer.write(b'</fileChecksum>')
+            if indexed_root_ctx is not None:
+                indexed_root_ctx.__exit__(None, None, None)
+                indexed_root_ctx = None
     return TrimStats(
         input_file=input_mzml,
         output_file=output_mzml,
