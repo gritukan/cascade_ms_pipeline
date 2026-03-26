@@ -168,6 +168,7 @@ class SearchStepConfig:
     fdr: FDRConfig = field(default_factory=FDRConfig)
     trim: TrimmingConfig = field(default_factory=TrimmingConfig)
     enabled: bool = True
+    skip_engine: bool = False
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "SearchStepConfig":
@@ -209,6 +210,7 @@ class SearchStepConfig:
             fdr=FDRConfig.from_dict(raw.get("fdr")),
             trim=TrimmingConfig.from_dict(raw.get("trim")),
             enabled=bool(raw.get("enabled", True)),
+            skip_engine=bool(raw.get("skip_engine", False)),
         )
 
 

@@ -249,7 +249,7 @@ class DiannEngine(SearchEngine):
         pep_col = choose_first_column(work, ["Stripped.Sequence", "Sequence", "Peptide", "Modified.Sequence", "Precursor.Id"])
         mod_pep_col = choose_first_column(work, ["Modified.Sequence", "Precursor.Id", "Stripped.Sequence"])
         prot_col = choose_first_column(work, ["Protein.Ids", "Protein.Group", "Protein.Names", "Proteins"])
-        score_col = choose_first_column(work, ["CScore", "Score", "score", "Mass.Evidence"])
+        score_col = choose_first_column(work, ["CScore", "Score", "score"])
         run_col = choose_first_column(work, ["Run", "File.Name", "FileName", "Raw.File"])
         precursor_col = choose_first_column(work, ["Precursor.Id", "PrecursorID", "Precursor"])
 
@@ -270,7 +270,23 @@ class DiannEngine(SearchEngine):
                 out["label"] = ser.map(lambda x: -1.0 if bool(x) else 1.0)
             else:
                 out["label"] = pd.to_numeric(ser, errors="coerce").fillna(0).astype(int).map(lambda x: -1.0 if x != 0 else 1.0)
-        out["score_engine"] = safe_float_series(work[score_col]) if score_col else (-safe_float_series(work[q_col]))
+        if score_col:
+            out["score_engine"] = safe_float_series(work[score_col])
+        else:
+            pep_col_name = choose_first_column(work, ["PEP", "pep", "Pep"])
+
+            sort_cols = [q_col]
+            if pep_col_name:
+                sort_cols.append(pep_col_name)
+
+            # Sort properly by both columns
+            sorted_df = work.sort_values(sort_cols, ascending=True, na_position='last')
+
+            # Assign rank (0 = best)
+            sorted_df["score_engine"] = -pd.Series(range(len(sorted_df)), index=sorted_df.index)
+
+            # Map back to original dataframe
+            out["score_engine"] = sorted_df["score_engine"].reindex(work.index)
         out["engine_q"] = safe_float_series(work[q_col])
         out["rank"] = np.nan
         out["row_id"] = [f"prec_{i:08d}" for i in range(len(out))]
@@ -334,7 +350,12 @@ class DiannEngine(SearchEngine):
         raw_paths: dict[str, Path] = {}
 
         if not needs_separate_predicted_library_step(base_cfg):
-            return None, base_cfg, raw_paths
+            search_cfg = replace(
+                base_cfg,
+                fasta_search=False,
+                predictor=False,
+            )
+            return None, search_cfg , raw_paths
 
         temp_root = base_cfg.temp_dir or (engine_dir / "temp")
         predicted_lib_dir = temp_root / "predicted_library"
@@ -387,7 +408,8 @@ class DiannEngine(SearchEngine):
 
         if library_generation_cfg is not None:
             lib_cmd, lib_used_cfg = build_diann_cmd(library_generation_cfg)
-            run_cmd(lib_cmd, dry_run=ctx.general.dry_run, log_path=ctx.log_path)
+            if not ctx.step.skip_engine:
+                run_cmd(lib_cmd, dry_run=ctx.general.dry_run, log_path=ctx.log_path)
             if lib_used_cfg is not None:
                 extra_raw_paths["predicted_lib_cfg"] = lib_used_cfg
             predicted_lib_report_path = resolve_optional_report_path(
@@ -397,7 +419,8 @@ class DiannEngine(SearchEngine):
                 extra_raw_paths["predicted_lib_report"] = predicted_lib_report_path
 
         search_cmd, used_cfg = build_diann_cmd(search_cfg)
-        run_cmd(search_cmd, dry_run=ctx.general.dry_run, log_path=ctx.log_path)
+        if not ctx.step.skip_engine:
+            run_cmd(search_cmd, dry_run=ctx.general.dry_run, log_path=ctx.log_path)
 
         normalized_path = ctx.step_dir / "normalized" / "row_base_engine.tsv"
         normalized_path.parent.mkdir(parents=True, exist_ok=True)
